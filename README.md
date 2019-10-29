@@ -60,4 +60,8 @@ python3 attack.py --in sample-000000.wav --target "this is a test" --out adv.wav
 
 ```
 python3 classify.py --in adv.wav --restore_path ./DS_model/deepspeech-0.4.1-checkpoint/model.v0.4.1
+# should get 'this is a test'
+
+python3 classify.py --in sample-000000.wav --restore_path ./DS_model/deepspeech-0.4.1-checkpoint/model.v0.4.1
+# should get something else
 ```
