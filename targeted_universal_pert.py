@@ -1,6 +1,10 @@
 import numpy as np
 from deeptarget import deeptarget
+import matplotlib.pyplot as plt
 from util_univ import *
+import cv2
+from PIL import Image
+
 
 def proj_lp(v, xi, p):
 
@@ -18,6 +22,8 @@ def proj_lp(v, xi, p):
     return v
 
 def targeted_perturbation(dataset, f, grads,target, delta=0.2, max_iter_uni = np.inf, xi=10, p=np.inf, overshoot=0.02, max_iter_df=20):
+    # Calculate perturbation from dataset, including iteration
+
     """
     :param dataset: Images of size MxHxWxC (M: number of images). I Recommend M > 5000
 
@@ -55,7 +61,9 @@ def targeted_perturbation(dataset, f, grads,target, delta=0.2, max_iter_uni = np
         # Go through the data set and compute the perturbation increments sequentially
         for k in range(0, num_images):
             cur_img = dataset[k:(k+1), :, :, :]
+            cv2.imwrite("iii.jpg", cur_img[0])
 
+            # print(cur_img)
             if int(np.argmax(np.array(f(cur_img+v)).flatten())) != int(target):
                 
                 print("\rProgress : ["+"#"*int(k/int(num_images/20))+"-"*(20-int(k/int(num_images/20)))+"] ", str(k).zfill(len(str(num_images))), ' / ',num_images,"," ,end="")
@@ -74,6 +82,7 @@ def targeted_perturbation(dataset, f, grads,target, delta=0.2, max_iter_uni = np
 
         itr = itr + 1
 
+        print("v:", v)
 
         # Compute the target fooling rate
         target_fooling_rate = target_fooling_rate_calc(v=v,dataset=dataset,f=f,target=target)

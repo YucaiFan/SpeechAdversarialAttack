@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import sys, getopt
 import zipfile
 from timeit import time
+import cv2
 
 if sys.version_info[0] >= 3:
     from urllib.request import urlretrieve
@@ -90,6 +91,7 @@ if __name__ == '__main__':
         else:
             file_perturbation = os.path.join('data','precomputing_perturbations', 'universal-target-'+str(target).zfill(5)+'.npy')
 
+        file_perturbation = os.path.join('data', 'pert_M.npy')
         # TODO: Optimize this construction part!
         print('>> Compiling the gradient tensorflow functions. This might take some time...')
         y_flat = tf.reshape(persisted_output, (-1,))
@@ -99,10 +101,11 @@ if __name__ == '__main__':
         print('>> Computing gradient function...')
         def grad_fs(image_inp, indices): return persisted_sess.run(dydx, feed_dict={persisted_input: image_inp, inds: indices}).squeeze(axis=1)
 
-        if os.path.isfile(file_perturbation) == 0:
-
+        #if os.path.isfile(file_perturbation) == 0:
+        if True:
             # Load/Create data
-            datafile = os.path.join('data', 'imagenet_data.npy')
+            # datafile = os.path.join('data', 'imagenet_data.npy')
+            datafile = os.path.join('M.npy')
             if os.path.isfile(datafile) == 0:
                 print('>> Creating pre-processed imagenet data...')
                 X = create_imagenet_npy(path_train_imagenet)
@@ -136,23 +139,56 @@ if __name__ == '__main__':
         # Test the perturbation on the image
         labels = open(os.path.join('data', 'labels.txt'), 'r').read().split('\n')
 
-        image_original = preprocess_image_batch([path_test_image], img_size=(256, 256), crop_size=(224, 224), color_mode="rgb")
-        str_label_original =img2str(f=f,img=image_original)
+        import os
 
-        # Clip the perturbation to make sure images fit in uint8
+        cnt = 0
+        for file_baseball in os.listdir("../M/"):
+            if cnt > 25:
+                break
+            cnt += 1
+            if 'jpg' not in file_baseball:
+                continue
+            print(file_baseball)
+            path_test_image = "../M/" + file_baseball
 
-        image_perturbed = avg_add_clip_pert(image_original,v)
-        label_perturbed = np.argmax(f(image_perturbed), axis=1).flatten()
-        str_label_perturbed = img2str(f=f,img=image_perturbed)
+            image_original = cv2.imread(path_test_image)
 
+            image_original = cv2.resize(image_original, (224,224))
+
+            image_original = image_original[None, :, :, :]
+            print("image_original:", image_original.shape)
+            print("v", v.shape)
+            # image_original = preprocess_image_batch([path_test_image], img_size=(256, 256), crop_size=(224, 224), color_mode="rgb")
+            str_label_original = img2str(f=f,img=image_original)
+
+            # Clip the perturbation to make sure images fit in uint8
+            # print(v)
+
+            # print(image_original)
+
+            #image_perturbed = avg_add_clip_pert(image_original,v)
+            image_perturbed = image_original + v
+
+            # print(image_perturbed)
+            label_perturbed = np.argmax(f(image_perturbed), axis=1).flatten()
+            str_label_perturbed = img2str(f=f,img=image_perturbed)
+
+            print(image_perturbed.shape)
+            print(str_label_original, str_label_perturbed)
+        
         # Show original and perturbed image
+        # TODO: need to revert average manipulation
+
+        img_org = cv2.cvtColor(image_original[0, :, :, :].astype(dtype='uint8'), cv2.COLOR_BGR2RGB)
+        img_pert = cv2.cvtColor(image_perturbed[0, :, :, :].astype(dtype='uint8'), cv2.COLOR_BGR2RGB)
+
         plt.figure()
         plt.subplot(1, 2, 1)
-        plt.imshow(undo_image_avg(image_original[0, :, :, :]).astype(dtype='uint8'), interpolation=None)
+        plt.imshow(img_org, interpolation=None)
         plt.title(str_label_original)
 
         plt.subplot(1, 2, 2)
-        plt.imshow(undo_image_avg(image_perturbed[0, :, :, :]).astype(dtype='uint8'), interpolation=None)
+        plt.imshow(img_pert, interpolation=None)
         plt.title(str_label_perturbed)
 
         plt.show()
