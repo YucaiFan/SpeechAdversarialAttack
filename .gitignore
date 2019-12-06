@@ -1,2 +1,5 @@
-*.jpg
-./__pycache__
+/DeepSpeech/*
+/deepspeech-0.4.1-checkpoint/*
+/__pycache__/*
+*.npy
+*.zip

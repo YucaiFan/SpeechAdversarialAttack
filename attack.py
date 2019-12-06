@@ -36,10 +36,10 @@ toks = " abcdefghijklmnopqrstuvwxyz'-"
 
 def convert_mp3(new, lengths):
     import pydub
-    wav.write("/tmp/load.wav", 16000,
+    wav.write("./tmp/load.wav", 16000,
               np.array(np.clip(np.round(new[0][:lengths[0]]),
                                -2**15, 2**15-1),dtype=np.int16))
-    pydub.AudioSegment.from_wav("/tmp/load.wav").export("/tmp/saved.mp3")
+    pydub.AudioSegment.from_wav("./tmp/load.wav").export("./tmp/saved.mp3")
     raw = pydub.AudioSegment.from_mp3("/tmp/saved.mp3")
     mp3ed = np.array([struct.unpack("<h", raw.raw_data[i:i+2])[0] for i in range(0,len(raw.raw_data),2)])[np.newaxis,:lengths[0]]
     return mp3ed
@@ -68,7 +68,9 @@ class Attack:
         # they are prefixed with qq_ just so that we know which
         # ones are ours so when we restore the session we don't
         # clobber them.
-        self.delta = delta = tf.Variable(np.zeros((batch_size, max_audio_len), dtype=np.float32), name='qq_delta')
+        
+        # self.delta = delta = tf.Variable(np.zeros((batch_size, max_audio_len), dtype=np.float32), name='qq_delta')        
+        self.delta = delta = tf.Variable(np.zeros(max_audio_len, dtype=np.float32), name='qq_delta')        
         self.mask = mask = tf.Variable(np.zeros((batch_size, max_audio_len), dtype=np.float32), name='qq_mask')
         self.cwmask = cwmask = tf.Variable(np.zeros((batch_size, phrase_length), dtype=np.float32), name='qq_cwmask')
         self.original = original = tf.Variable(np.zeros((batch_size, max_audio_len), dtype=np.float32), name='qq_original')
@@ -85,13 +87,14 @@ class Attack:
         # We set the new input to the model to be the abve delta
         # plus a mask, which allows us to enforce that certain
         # values remain constant 0 for length padding sequences.
-        self.new_input = new_input = self.apply_delta*mask + original
+        self.new_input = new_input = self.apply_delta*mask + original # a list of audios
 
         # We add a tiny bit of noise to help make sure that we can
         # clip our values to 16-bit integers and not break things.
-        noise = tf.random_normal(new_input.shape,
-                                 stddev=2)
-        pass_in = tf.clip_by_value(new_input+noise, -2**15, 2**15-1)
+        
+        #noise = tf.random_normal(new_input.shape, stddev=2)
+        #pass_in = tf.clip_by_value(new_input+noise, -2**15, 2**15-1)
+        pass_in = tf.clip_by_value(new_input, -2**15, 2**15-1)
 
         # Feed this final value to get the logits.
         self.logits = logits = get_logits(pass_in, lengths)
@@ -130,7 +133,7 @@ class Attack:
         start_vars = set(x.name for x in tf.global_variables())
         optimizer = tf.train.AdamOptimizer(learning_rate)
 
-        grad,var = optimizer.compute_gradients(self.loss, [delta])[0]
+        grad, var = optimizer.compute_gradients(self.loss, [delta])[0]
         self.train = optimizer.apply_gradients([(tf.sign(grad),var)])
         
         end_vars = tf.global_variables()
@@ -142,6 +145,7 @@ class Attack:
         self.decoded, _ = tf.nn.ctc_beam_search_decoder(logits, lengths, merge_repeated=False, beam_width=100)
 
     def attack(self, audio, lengths, target, finetune=None):
+        print(">> rescale is: ", self.rescale)        
         sess = self.sess
 
         # Initialize all of the variables
@@ -177,12 +181,6 @@ class Attack:
             if i%10 == 0:
                 new, delta, r_out, r_logits = sess.run((self.new_input, self.delta, self.decoded, self.logits))
                 lst = [(r_out, r_logits)]
-                if self.mp3:
-                    mp3ed = convert_mp3(new, lengths)
-                    
-                    mp3_out, mp3_logits = sess.run((self.decoded, self.logits),
-                                                   {self.new_input: mp3ed})
-                    lst.append((mp3_out, mp3_logits))
 
                 for out, logits in lst:
                     chars = out[0].values
@@ -195,21 +193,21 @@ class Attack:
 
                     # Here we print the strings that are recognized.
                     res = ["".join(toks[int(x)] for x in y).replace("-","") for y in res]
+
+                    print("-"*20)
                     print("\n".join(res))
-                    
+                    print("\n")
+
                     # And here we print the argmax of the alignment.
                     res2 = np.argmax(logits,axis=2).T
                     res2 = ["".join(toks[int(x)] for x in y[:(l-1)//320]) for y,l in zip(res2,lengths)]
                     print("\n".join(res2))
+                    print("\n")
+                    print("-"*20)
 
+            feed_dict = {}
 
-            if self.mp3:
-                new = sess.run(self.new_input)
-                mp3ed = convert_mp3(new, lengths)
-                feed_dict = {self.new_input: mp3ed}
-            else:
-                feed_dict = {}
-                
+            print(self.delta.shape)                
             # Actually do the optimization ste
             d, el, cl, l, logits, new_input, _ = sess.run((self.delta, self.expanded_loss,
                                                            self.ctcloss, self.loss,
@@ -252,11 +250,11 @@ class Attack:
 
                     # Just for debugging, save the adversarial example
                     # to /tmp so we can see it if we want
-                    wav.write("/tmp/adv.wav", 16000,
+                    wav.write("./tmp/adv.wav", 16000,
                               np.array(np.clip(np.round(new_input[ii]),
-                                               -2**15, 2**15-1),dtype=np.int16))
-
-        return final_deltas
+                                               -2**15, 2**15-1),dtype=np.int16)) 
+        
+        return final_deltas, self.delta
     
     
 def main():
@@ -330,6 +328,9 @@ def main():
                 finetune.append(list(wav.read(args.finetune[i])[1]))
 
         maxlen = max(map(len,audios))
+        print(">> audios: ", len(audios), len(audios[0]))
+        print(">> maxlen: ", maxlen)
+
         audios = np.array([x+[0]*(maxlen-len(x)) for x in audios])
         finetune = np.array([x+[0]*(maxlen-len(x)) for x in finetune])
 
@@ -343,15 +344,26 @@ def main():
                         num_iterations=args.iterations,
                         l2penalty=args.l2penalty,
                         restore_path=args.restore_path)
-        deltas = attack.attack(audios,
+        
+        # delta = attack.attack(audios,
+        #                        lengths,
+        #                        [[toks.index(x) for x in phrase]]*len(audios),
+        #                        finetune)
+
+        deltas, final_pert = attack.attack(audios,
                                lengths,
                                [[toks.index(x) for x in phrase]]*len(audios),
                                finetune)
 
+        print(">> pert:")
+        print(final_pert)
+      
+        
+        np.save("deltas", deltas)
         # And now save it to the desired output
         if args.mp3:
             convert_mp3(deltas, lengths)
-            copyfile("/tmp/saved.mp3", args.out[0])
+            copyfile("./tmp/saved.mp3", args.out[0])
             print("Final distortion", np.max(np.abs(deltas[0][:lengths[0]]-audios[0][:lengths[0]])))
         else:
             for i in range(len(args.input)):
@@ -364,4 +376,106 @@ def main():
                                            -2**15, 2**15-1),dtype=np.int16))
                 print("Final distortion", np.max(np.abs(deltas[i][:lengths[i]]-audios[i][:lengths[i]])))
 
+      
+        print(">> rescale", attack.rescale[0])
+        print(">> rescale", attack.rescale[1])
+        print(">> rescale", attack.rescale[2])
+        print(">> final_pert", final_pert.shape)
+        fs, x_test = wav.read("./data/test0.wav")
+        assert fs == 16000
+        assert x_test.dtype == np.int16
+        # noise = tf.random_normal(new_input.shape, stddev=2)
+        l = len(x_test)
+        x_test = list(x_test)
+        maxlen_test = max(maxlen,len(x_test))
+        print(maxlen_test)
+        print(">> x_test:", len(x_test))
+        original_test = np.array(x_test+[0]*(maxlen_test-len(x_test)))
+        print(">> original:", original_test.shape)
+        print(">> rescale:", attack.rescale[0])
+        apply_delta_test = tf.clip_by_value(final_pert, -2000, 2000)*attack.rescale[0]
+        
+        print(">> apply:", apply_delta_test)
+        mask_test = np.array([1 if i < l else 0 for i in range(maxlen_test)])
+        test_adv = apply_delta_test*mask_test + original_test
+        test_adv = test_adv.eval()
+        print(">> test_adv", test_adv.shape)
+        wav.write("test_adv0.wav", 16000,
+                  np.array(np.clip(np.round(test_adv[:l]),
+                                   -2**15, 2**15-1),dtype=np.int16))        
+
+        print(">> final_pert", final_pert.shape)
+        fs, x_test = wav.read("./data/test1.wav")
+        assert fs == 16000
+        assert x_test.dtype == np.int16
+        # noise = tf.random_normal(new_input.shape, stddev=2)
+        l = len(x_test)
+        x_test = list(x_test)
+        maxlen_test = max(maxlen,len(x_test))
+        print(maxlen_test)
+        print(">> x_test:", len(x_test))
+        original_test = np.array(x_test+[0]*(maxlen_test-len(x_test)))
+        print(">> original:", original_test.shape)
+        print(">> rescale:", attack.rescale[1])
+        apply_delta_test = tf.clip_by_value(final_pert, -2000, 2000)*attack.rescale[1]
+        
+        print(">> apply:", apply_delta_test)
+        mask_test = np.array([1 if i < l else 0 for i in range(maxlen_test)])
+        test_adv = apply_delta_test*mask_test + original_test
+        test_adv = test_adv.eval()
+        print(">> test_adv", test_adv.shape)
+        wav.write("test_adv1.wav", 16000,
+                  np.array(np.clip(np.round(test_adv[:l]),
+                                   -2**15, 2**15-1),dtype=np.int16))        
+        
+        print(">> rescale", attack.rescale)
+        print(">> final_pert", final_pert.shape)
+        fs, x_test = wav.read("./data/test2.wav")
+        assert fs == 16000
+        assert x_test.dtype == np.int16
+        # noise = tf.random_normal(new_input.shape, stddev=2)
+        l = len(x_test)
+        x_test = list(x_test)
+        maxlen_test = max(maxlen,len(x_test))
+        print(maxlen_test)
+        print(">> x_test:", len(x_test))
+        original_test = np.array(x_test+[0]*(maxlen_test-len(x_test)))
+        print(">> original:", original_test.shape)
+        print(">> rescale:", attack.rescale[2])
+        apply_delta_test = tf.clip_by_value(final_pert, -2000, 2000)*attack.rescale[2]
+        
+        print(">> apply:", apply_delta_test)
+        mask_test = np.array([1 if i < l else 0 for i in range(maxlen_test)])
+        test_adv = apply_delta_test*mask_test + original_test
+        test_adv = test_adv.eval()
+        print(">> test_adv", test_adv.shape)
+        wav.write("test_adv.wav2", 16000,
+                  np.array(np.clip(np.round(test_adv[:l]),
+                                   -2**15, 2**15-1),dtype=np.int16))        
+        
+        print(">> rescale", attack.rescale)
+        print(">> final_pert", final_pert.shape)
+        fs, x_test = wav.read("./data/test3.wav")
+        assert fs == 16000
+        assert x_test.dtype == np.int16
+        # noise = tf.random_normal(new_input.shape, stddev=2)
+        l = len(x_test)
+        x_test = list(x_test)
+        maxlen_test = max(maxlen,len(x_test))
+        print(maxlen_test)
+        print(">> x_test:", len(x_test))
+        original_test = np.array(x_test+[0]*(maxlen_test-len(x_test)))
+        print(">> original:", original_test.shape)
+        print(">> rescale:", attack.rescale[2])
+        apply_delta_test = tf.clip_by_value(final_pert, -2000, 2000)*attack.rescale[2]
+        
+        print(">> apply:", apply_delta_test)
+        mask_test = np.array([1 if i < l else 0 for i in range(maxlen_test)])
+        test_adv = apply_delta_test*mask_test + original_test
+        test_adv = test_adv.eval()
+        print(">> test_adv", test_adv.shape)
+        wav.write("test_adv.wav3", 16000,
+                  np.array(np.clip(np.round(test_adv[:l]),
+                                   -2**15, 2**15-1),dtype=np.int16))        
+        
 main()
