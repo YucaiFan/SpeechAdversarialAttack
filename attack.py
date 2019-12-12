@@ -144,118 +144,130 @@ class Attack:
         # Decoder from the logits, to see how we're doing
         self.decoded, _ = tf.nn.ctc_beam_search_decoder(logits, lengths, merge_repeated=False, beam_width=100)
 
-    def attack(self, audio, lengths, target, finetune=None):
-        print(">> rescale is: ", self.rescale)        
-        sess = self.sess
-
-        # Initialize all of the variables
-        # TODO: each of these assign ops creates a new TF graph
-        # object, and they should be all created only once in the
-        # constructor. It works fine as long as you don't call
-        # attack() a bunch of times.
-        sess.run(tf.variables_initializer([self.delta]))
-        sess.run(self.original.assign(np.array(audio)))
-        sess.run(self.lengths.assign((np.array(lengths)-1)//320))
-        sess.run(self.mask.assign(np.array([[1 if i < l else 0 for i in range(self.max_audio_len)] for l in lengths])))
-        sess.run(self.cwmask.assign(np.array([[1 if i < l else 0 for i in range(self.phrase_length)] for l in (np.array(lengths)-1)//320])))
-        sess.run(self.target_phrase_lengths.assign(np.array([len(x) for x in target])))
-        sess.run(self.target_phrase.assign(np.array([list(t)+[0]*(self.phrase_length-len(t)) for t in target])))
-        c = np.ones((self.batch_size, self.phrase_length))
-        sess.run(self.importance.assign(c))
-        sess.run(self.rescale.assign(np.ones((self.batch_size,1))))
-
-        # Here we'll keep track of the best solution we've found so far
-        final_deltas = [None]*self.batch_size
-
-        if finetune is not None and len(finetune) > 0:
-            sess.run(self.delta.assign(finetune-audio))
-        
-        # We'll make a bunch of iterations of gradient descent here
+    def attack(self, audios_all, lengths_all, targets_all, finetune=None):
+        batch_i = 0
+        final_deltas = [None]*len(audios_all)
         now = time.time()
         MAX = self.num_iterations
+
+        sess = self.sess
+        sess.run(tf.variables_initializer([self.delta]))
+
         for i in range(MAX):
             iteration = i
             now = time.time()
+            for batch_i in range(len(audios_all)//self.batch_size):
+                print("="*40)
+                print(">> Epoch[%d/%d], batch[%d/%d]" % (i+1, MAX, batch_i+1, len(audios_all)//self.batch_size))
+                print("="*40)
+                if batch_i*self.batch_size + self.batch_size > len(audios_all):
+                    break
+                audio = audios_all[batch_i*self.batch_size: (batch_i+1)*self.batch_size]
+                lengths = lengths_all[batch_i*self.batch_size: (batch_i+1)*self.batch_size]
+                target = targets_all[batch_i*self.batch_size: (batch_i+1)*self.batch_size]
+                print(">> audio size:", audio.shape)
 
-            # Print out some debug information every 10 iterations.
-            if i%10 == 0:
-                new, delta, r_out, r_logits = sess.run((self.new_input, self.delta, self.decoded, self.logits))
-                lst = [(r_out, r_logits)]
 
-                for out, logits in lst:
-                    chars = out[0].values
+                # Initialize all of the variables
+                # TODO: each of these assign ops creates a new TF graph
+                # object, and they should be all created only once in the
+                # constructor. It works fine as long as you don't call
+                # attack() a bunch of times.
+                sess.run(self.original.assign(np.array(audio)))
+                sess.run(self.lengths.assign((np.array(lengths)-1)//320))
+                sess.run(self.mask.assign(np.array([[1 if i < l else 0 for i in range(self.max_audio_len)] for l in lengths])))
+                sess.run(self.cwmask.assign(np.array([[1 if i < l else 0 for i in range(self.phrase_length)] for l in (np.array(lengths)-1)//320])))
+                sess.run(self.target_phrase_lengths.assign(np.array([len(x) for x in target])))
+                sess.run(self.target_phrase.assign(np.array([list(t)+[0]*(self.phrase_length-len(t)) for t in target])))
+                c = np.ones((self.batch_size, self.phrase_length))
+                sess.run(self.importance.assign(c))
+                sess.run(self.rescale.assign(np.ones((self.batch_size,1))))
 
-                    res = np.zeros(out[0].dense_shape)+len(toks)-1
+                # Here we'll keep track of the best solution we've found so far
+
+                if finetune is not None and len(finetune) > 0:
+                    sess.run(self.delta.assign(finetune-audio))
                 
-                    for ii in range(len(out[0].values)):
-                        x,y = out[0].indices[ii]
-                        res[x,y] = out[0].values[ii]
+                # We'll make a bunch of iterations of gradient descent here
 
-                    # Here we print the strings that are recognized.
-                    res = ["".join(toks[int(x)] for x in y).replace("-","") for y in res]
+                # Print out some debug information every 10 iterations.
+                if i%5 == 0:
+                    new, delta, r_out, r_logits = sess.run((self.new_input, self.delta, self.decoded, self.logits))
+                    lst = [(r_out, r_logits)]
 
-                    print("-"*20)
-                    print("\n".join(res))
-                    print("\n")
+                    for out, logits in lst:
+                        chars = out[0].values
 
-                    # And here we print the argmax of the alignment.
-                    res2 = np.argmax(logits,axis=2).T
-                    res2 = ["".join(toks[int(x)] for x in y[:(l-1)//320]) for y,l in zip(res2,lengths)]
-                    print("\n".join(res2))
-                    print("\n")
-                    print("-"*20)
-
-            feed_dict = {}
-
-            print(self.delta.shape)                
-            # Actually do the optimization ste
-            d, el, cl, l, logits, new_input, _ = sess.run((self.delta, self.expanded_loss,
-                                                           self.ctcloss, self.loss,
-                                                           self.logits, self.new_input,
-                                                           self.train),
-                                                          feed_dict)
+                        res = np.zeros(out[0].dense_shape)+len(toks)-1
                     
-            # Report progress
-            print("%.3f"%np.mean(cl), "\t", "\t".join("%.3f"%x for x in cl))
+                        for ii in range(len(out[0].values)):
+                            x,y = out[0].indices[ii]
+                            res[x,y] = out[0].values[ii]
 
-            logits = np.argmax(logits,axis=2).T
-            for ii in range(self.batch_size):
-                # Every 100 iterations, check if we've succeeded
-                # if we have (or if it's the final epoch) then we
-                # should record our progress and decrease the
-                # rescale constant.
-                if (self.loss_fn == "CTC" and i%10 == 0 and res[ii] == "".join([toks[x] for x in target[ii]])) \
-                   or (i == MAX-1 and final_deltas[ii] is None):
-                    # Get the current constant
-                    rescale = sess.run(self.rescale)
-                    if rescale[ii]*2000 > np.max(np.abs(d)):
-                        # If we're already below the threshold, then
-                        # just reduce the threshold to the current
-                        # point and save some time.
-                        print("It's way over", np.max(np.abs(d[ii]))/2000.0)
-                        rescale[ii] = np.max(np.abs(d[ii]))/2000.0
+                        # Here we print the strings that are recognized.
+                        res = ["".join(toks[int(x)] for x in y).replace("-","") for y in res]
 
-                    # Otherwise reduce it by some constant. The closer
-                    # this number is to 1, the better quality the result
-                    # will be. The smaller, the quicker we'll converge
-                    # on a result but it will be lower quality.
-                    rescale[ii] *= .8
+                        print("-"*20)
+                        print("\n".join(res))
+                        print("\n")
 
-                    # Adjust the best solution found so far
-                    final_deltas[ii] = new_input[ii]
+                        # And here we print the argmax of the alignment.
+                        res2 = np.argmax(logits,axis=2).T
+                        res2 = ["".join(toks[int(x)] for x in y[:(l-1)//320]) for y,l in zip(res2,lengths)]
+                        #print("\n".join(res2))
+                        #print("\n")
+                        print("-"*20)
 
-                    print("Worked i=%d ctcloss=%f bound=%f"%(ii,cl[ii], 2000*rescale[ii][0]))
-                    #print('delta',np.max(np.abs(new_input[ii]-audio[ii])))
-                    sess.run(self.rescale.assign(rescale))
+                feed_dict = {}
 
-                    # Just for debugging, save the adversarial example
-                    # to /tmp so we can see it if we want
-                    wav.write("./tmp/adv.wav", 16000,
-                              np.array(np.clip(np.round(new_input[ii]),
-                                               -2**15, 2**15-1),dtype=np.int16)) 
+                # Actually do the optimization ste
+                d, el, cl, l, logits, new_input, _ = sess.run((self.delta, self.expanded_loss,
+                                                               self.ctcloss, self.loss,
+                                                               self.logits, self.new_input,
+                                                               self.train),
+                                                              feed_dict)
+                        
+                # Report progress
+                print("%.3f"%np.mean(cl), "\t", "\t".join("%.3f"%x for x in cl))
+
+                logits = np.argmax(logits,axis=2).T
+            
+                for ii in range(self.batch_size):
+                    # Every epoch, check if we've succeeded
+                    # if we have (or if it's the final epoch) then we
+                    # should record our progress and decrease the
+                    # rescale constant.
+                    if (self.loss_fn == "CTC" and (i+1)%10 == 0 and res[ii] == "".join([toks[x] for x in target[ii]])) \
+                       or (i == MAX-1 and final_deltas[ii+batch_i*self.batch_size] is None):
+                        # Get the current constant
+                        rescale = sess.run(self.rescale)
+                        if rescale[ii]*2000 > np.max(np.abs(d)):
+                            # If we're already below the threshold, then
+                            # just reduce the threshold to the current
+                            # point and save some time.
+                            print("It's way over", np.max(np.abs(d[ii]))/2000.0)
+                            rescale[ii] = np.max(np.abs(d[ii]))/2000.0
+
+                        # Otherwise reduce it by some constant. The closer
+                        # this number is to 1, the better quality the result
+                        # will be. The smaller, the quicker we'll converge
+                        # on a result but it will be lower quality.
+                        rescale[ii] *= .8
+
+                        # Adjust the best solution found so far
+                        final_deltas[ii+batch_i*self.batch_size] = new_input[ii]
+
+                        print("Worked i=%d ctcloss=%f bound=%f"%(ii,cl[ii], 2000*rescale[ii][0]))
+                        #print('delta',np.max(np.abs(new_input[ii]-audio[ii])))
+                        sess.run(self.rescale.assign(rescale))
+
+                        # Just for debugging, save the adversarial example
+                        # to /tmp so we can see it if we want
+                        wav.write("./tmp/adv.wav", 16000,
+                                  np.array(np.clip(np.round(new_input[ii]),
+                                                   -2**15, 2**15-1),dtype=np.int16)) 
         
         return final_deltas, self.delta
-    
     
 def main():
     """
@@ -326,7 +338,7 @@ def main():
                     raw = pydub.AudioSegment.from_mp3(args.input_path + "/" + f).set_frame_rate(16000)
                     audio = np.array([struct.unpack("<h", raw.raw_data[i:i+2])[0] for i in range(0,len(raw.raw_data),2)])
                 elif f.split(".")[-1] == 'wav':
-                    fs, audio = wav.read(f)
+                    fs, audio = wav.read(args.input_path+"/"+f)
                     assert fs == 16000
                     assert audio.dtype == np.int16
                 audios.append(list(audio))
@@ -361,7 +373,7 @@ def main():
 
         # Set up the attack class and run it
         attack = Attack(sess, 'CTC', len(phrase), maxlen,
-                        batch_size=len(audios),
+                        batch_size=20,
                         mp3=args.mp3,
                         learning_rate=args.lr,
                         num_iterations=args.iterations,
@@ -379,10 +391,12 @@ def main():
                                finetune)
 
         print(">> pert:")
-        print(final_pert)
+        print(final_pert.eval())
       
-        
-        np.save("deltas", deltas)
+        print(">> deltas:")
+        print(deltas)
+
+        np.save("precomputed_pert", final_pert.eval())
         # And now save it to the desired output
         if args.mp3:
             convert_mp3(deltas, lengths)
