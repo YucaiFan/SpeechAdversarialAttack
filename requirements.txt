@@ -1,6 +1,6 @@
 matplotlib==3.0.3
 mnist==0.2.2
-numpy==1.16.3
+numpy==1.22.0
 opencv-python==4.1.0.25
 pillow>=6.2.0
 scipy==1.2.1
